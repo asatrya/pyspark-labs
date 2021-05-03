@@ -114,74 +114,47 @@ df.groupBy("InvoiceNo", "CustomerId").agg(
 # Window function
 # -----------------------------
 
+# We will add a date column that will convert our invoice date 
+# into a column that contains only date information
 from pyspark.sql.functions import col, to_date
 dfWithDate = df.withColumn("date", to_date(col("InvoiceDate"), "MM/d/yyyy H:mm"))
+
+# show
+dfWithDate.show()
+
+# create table for SQL processing
 dfWithDate.createOrReplaceTempView("dfWithDate")
 
 
-# COMMAND ----------
-
+# define Window spec
+# --
+# partitionBy describes how we will be breaking up our group. 
+# orderBy determines the ordering within a given partition, 
+# the frame specification (the rowsBetween statement) states 
+#    which rows will be included in the frame based on its reference 
+#    to the current input row. 
+#    In the following example, we look at all previous rows up to the current row
 from pyspark.sql.window import Window
 from pyspark.sql.functions import desc
 windowSpec = Window\
-  .partitionBy("CustomerId", "date")\
+  .partitionBy("date")\
   .orderBy(desc("Quantity"))\
   .rowsBetween(Window.unboundedPreceding, Window.currentRow)
 
 
-# COMMAND ----------
+# We will determine which CustomerId has the most Quantity for each date
+# by ranking all rows in each partition using row_number function
+from pyspark.sql.functions import col, row_number
 
-from pyspark.sql.functions import max
-maxPurchaseQuantity = max(col("Quantity")).over(windowSpec)
-
-
-# COMMAND ----------
-
-from pyspark.sql.functions import dense_rank, rank
-purchaseDenseRank = dense_rank().over(windowSpec)
-purchaseRank = rank().over(windowSpec)
-
-
-# COMMAND ----------
-
-from pyspark.sql.functions import col
+# to make date parsing compatible with Spark 3.0
+spark.conf.set('spark.sql.legacy.timeParserPolicy', 'LEGACY')
 
 dfWithDate.where("CustomerId IS NOT NULL").orderBy("CustomerId")\
   .select(
-    col("CustomerId"),
     col("date"),
+    col("CustomerId"),
     col("Quantity"),
-    purchaseRank.alias("quantityRank"),
-    purchaseDenseRank.alias("quantityDenseRank"),
-    maxPurchaseQuantity.alias("maxPurchaseQuantity")).show()
-
-
-# COMMAND ----------
-
-dfNoNull = dfWithDate.drop()
-dfNoNull.createOrReplaceTempView("dfNoNull")
-
-
-# COMMAND ----------
-
-rolledUpDF = dfNoNull.rollup("Date", "Country").agg(sum("Quantity"))\
-  .selectExpr("Date", "Country", "`sum(Quantity)` as total_quantity")\
-  .orderBy("Date")
-rolledUpDF.show()
-
-
-# COMMAND ----------
-
-from pyspark.sql.functions import sum
-
-dfNoNull.cube("Date", "Country").agg(sum(col("Quantity")))\
-  .select("Date", "Country", "sum(Quantity)").orderBy("Date").show()
-
-
-# COMMAND ----------
-
-pivoted = dfWithDate.groupBy("date").pivot("Country").sum()
-
-
-# COMMAND ----------
-
+    row_number().over(windowSpec).alias("quantityRowNumber"))\
+  .where("quantityRowNumber == 1")\
+  .sort("date")\
+  .show()
